@@ -14,12 +14,12 @@
     <main class="container">
 
         <section class="hero">
-            <div class="minecraft-icon">⛏️</div>
+            <div class="minecraft-icon">â›ï¸</div>
 
-            <h1>وضعیت سرور ماینکرفت</h1>
+            <h1>ÙˆØ¶Ø¹ÛŒØª Ø³Ø±ÙˆØ± Ù…Ø§ÛŒÙ†Ú©Ø±ÙØª</h1>
 
             <p>
-                وضعیت سرور Minecraft Java خود را بررسی کنید
+                ÙˆØ¶Ø¹ÛŒØª Ø³Ø±ÙˆØ± Minecraft Java Ø®ÙˆØ¯ Ø±Ø§ Ø¨Ø±Ø±Ø³ÛŒ Ú©Ù†ÛŒØ¯
             </p>
         </section>
 
@@ -28,18 +28,18 @@
             <div class="form">
 
                 <label for="host">
-                    IP یا دامنه سرور
+                    IP ÛŒØ§ Ø¯Ø§Ù…Ù†Ù‡ Ø³Ø±ÙˆØ±
                 </label>
 
                 <input
                     id="host"
                     type="text"
-                    placeholder="مثلاً play.example.com"
+                    placeholder="Ù…Ø«Ù„Ø§Ù‹ play.example.com"
                     autocomplete="off"
                 >
 
                 <label for="port">
-                    پورت
+                    Ù¾ÙˆØ±Øª
                 </label>
 
                 <input
@@ -52,7 +52,7 @@
                 >
 
                 <button id="checkButton">
-                    <span>بررسی سرور</span>
+                    <span>Ø¨Ø±Ø±Ø³ÛŒ Ø³Ø±ÙˆØ±</span>
                 </button>
 
             </div>
@@ -66,7 +66,7 @@
                     <div id="statusDot" class="status-dot"></div>
 
                     <div>
-                        <h2 id="statusText">آنلاین</h2>
+                        <h2 id="statusText">Ø¢Ù†Ù„Ø§ÛŒÙ†</h2>
                         <p id="serverAddress">---</p>
                     </div>
 
@@ -75,28 +75,28 @@
                 <div class="cards">
 
                     <div class="card">
-                        <span class="card-icon">👥</span>
+                        <span class="card-icon">ðŸ‘¥</span>
 
                         <div>
-                            <small>بازیکنان</small>
+                            <small>Ø¨Ø§Ø²ÛŒÚ©Ù†Ø§Ù†</small>
                             <strong id="players">0 / 0</strong>
                         </div>
                     </div>
 
                     <div class="card">
-                        <span class="card-icon">📡</span>
+                        <span class="card-icon">ðŸ“¡</span>
 
                         <div>
-                            <small>پینگ</small>
+                            <small>Ù¾ÛŒÙ†Ú¯</small>
                             <strong id="ping">0 ms</strong>
                         </div>
                     </div>
 
                     <div class="card">
-                        <span class="card-icon">🧱</span>
+                        <span class="card-icon">ðŸ§±</span>
 
                         <div>
-                            <small>نسخه</small>
+                            <small>Ù†Ø³Ø®Ù‡</small>
                             <strong id="version">---</strong>
                         </div>
                     </div>
@@ -114,7 +114,7 @@
                 </div>
 
                 <div class="last-update">
-                    آخرین بررسی:
+                    Ø¢Ø®Ø±ÛŒÙ† Ø¨Ø±Ø±Ø³ÛŒ:
                     <span id="lastUpdate">---</span>
                 </div>
 
@@ -131,8 +131,8 @@
     <script src="script.js"></script>
 
 </body>
-</html>�دن موفقیت‌آمیز -->
-    <div id="toast" class="toast">رمز عبور با موفقیت کپی شد!</div>
+</html>´Ø¯Ù† Ù…ÙˆÙÙ‚ÛŒØªâ€ŒØ¢Ù…ÛŒØ² -->
+    <div id="toast" class="toast">Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± Ø¨Ø§ Ù…ÙˆÙÙ‚ÛŒØª Ú©Ù¾ÛŒ Ø´Ø¯!</div>
 
     <script src="js/script.js"></script>    
 </body>
