@@ -994,12 +994,12 @@ const LANDING_HTML = `<!DOCTYPE html>
   --card-2:#f5f7fa;
   --border:#d8dde5;
   --accent:#16a34a;
-  --accent-2:#0891b2;
+  --accent-2:#0e7490;
   --danger:#dc2626;
   --warn:#d97706;
   --text:#111827;
   --muted:#5b6573;
-  --muted-2:#94a3b8;
+  --muted-2:#64748b;
   --motd-bg:#1a1a1a;
   --motd-fg:#f5f5f5;
   --bar-track:#d8dde5;
@@ -1250,6 +1250,11 @@ select option{background:var(--card);color:var(--text)}
 }
 .motd > bdi{ display: inline; }
 .motd-empty{color:var(--muted-2);font-size:12px;font-style:italic;direction:ltr}
+:root[data-theme="light"] .motd-empty{color:#9ca3af}
+:root[data-theme="light"] input::placeholder{color:#64748b;opacity:1}
+:root[data-theme="light"] .docs-ttl{color:#15803d}
+:root[data-theme="light"] .copy-ic:hover{color:#15803d}
+:root[data-theme="light"] .hd h1 span{color:#0e7490}
 
 /* ============================================================ */
 /* === ADVANCED SPARKLINE (v3.8.1)                           === */
@@ -1428,7 +1433,7 @@ select option{background:var(--card);color:var(--text)}
   color:var(--accent-2);
   font-size:14px;
 }
-:root[data-theme="light"] .spark-tooltip .v{color:#0891b2}
+:root[data-theme="light"] .spark-tooltip .v{color:#0e7490}
 :root[data-theme="light"] .spark-tooltip .t{color:#64748b}
 
 .spark-legend{
@@ -1442,7 +1447,7 @@ select option{background:var(--card);color:var(--text)}
   flex-wrap:wrap;
   gap:6px;
 }
-:root[data-theme="light"] .spark-legend{color:#94a3b8}
+:root[data-theme="light"] .spark-legend{color:#64748b}
 .spark-legend .dots{
   display:flex;
   align-items:center;
