@@ -535,7 +535,22 @@ const BLOCKED_IPV6_PATTERNS = [
 ];
 
 function isPrivateIPv4(ip) { return BLOCKED_IPV4_PATTERNS.some(rx => rx.test(ip)); }
-function isPrivateIPv6(ip) { return BLOCKED_IPV6_PATTERNS.some(rx => rx.test(ip)); }
+function isPrivateIPv6(ip) {
+  const lower = String(ip).toLowerCase();
+  if (BLOCKED_IPV6_PATTERNS.some(rx => rx.test(lower))) return true;
+  // fe80::/10 (fe80–febf) link-local
+  if (/^fe[89ab][0-9a-f]:/i.test(lower)) return true;
+  // IPv4-mapped in dotted form: ::ffff:a.b.c.d
+  let m = /^(?:0{0,4}:){0,5}:?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(lower);
+  if (m) return isPrivateIPv4(m[1]);
+  // IPv4-mapped in hex form: ::ffff:7f00:1
+  m = /^(?:0{0,4}:){0,5}:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(lower);
+  if (m) {
+    const hi = parseInt(m[1], 16), lo = parseInt(m[2], 16);
+    return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255].join("."));
+  }
+  return false;
+}
 
 function isPrivateHost(host) {
   if (!host) return true;
@@ -2094,6 +2109,7 @@ function renderSparkline(host, port, edition, currentPing, flash){
   var p = sparkPrefs;
   var arr = getPings(host, port, edition, p.window);
   var wrapCls = "spark-wrap" + (flash ? " flash" : "");
+  var wrapAttrs = ' data-host="'+escapeHtml(host)+'" data-port="'+escapeHtml(port==null?"":port)+'" data-ed="'+escapeHtml(edition)+'"';
 
   var toolbar =
     '<div class="spark-controls">' +
@@ -2106,7 +2122,7 @@ function renderSparkline(host, port, edition, currentPing, flash){
     '</div>';
 
   if(!arr.length && currentPing == null){
-    return '<div class="'+wrapCls+'">' +
+    return '<div class="'+wrapCls+'"'+wrapAttrs+'>' +
       '<div class="spark-head">' +
         '<span class="spark-title">📈 PING HISTORY</span>' +
         toolbar +
@@ -2284,7 +2300,7 @@ function renderSparkline(host, port, edition, currentPing, flash){
       '<span>' + Math.round(lo) + '–' + Math.round(hi) + 'ms</span>' +
     '</div>';
 
-  return '<div class="'+wrapCls+'">' +
+  return '<div class="'+wrapCls+'"'+wrapAttrs+'>' +
     '<div class="spark-head">' +
       '<span class="spark-title">📈 PING HISTORY <span class="count">'+arr.length+'</span></span>' +
       toolbar +
@@ -2647,7 +2663,7 @@ function render(data){
     var portKey = data.queried_port || data.port;
     var edKey   = data.edition || "java";
     var hadPings = getPings(hostKey, portKey, edKey).length > 0;
-    pushPing(hostKey, portKey, edKey, data.ping);
+    if(!data.cached) pushPing(hostKey, portKey, edKey, data.ping);
     var shouldFlash = hadPings || liveEnabled;
     var sparklineBlock = renderSparkline(hostKey, portKey, edKey, data.ping, shouldFlash);
 
@@ -2942,10 +2958,9 @@ function rerenderSparkline(){
     if(m) curPing = parseInt(m[1], 10);
   }
 
-  var up = new URLSearchParams(location.search);
-  var h = up.get("host") || $("host").value.trim();
-  var pt = up.get("port") || $("port").value.trim();
-  var e2 = up.get("edition") || $("edition").value;
+  var h = wrap.getAttribute("data-host") || "";
+  var pt = wrap.getAttribute("data-port") || "";
+  var e2 = wrap.getAttribute("data-ed") || "java";
   var newSpark = renderSparkline(h, pt, e2, curPing, true);
   wrap.outerHTML = newSpark;
 }
@@ -3091,6 +3106,7 @@ async function handleBatch(req, res, url) {
     return sendJson(res, 400, { success: false, error: "edition must be one of: " + EDITIONS.join(", ") });
   }
   const timeout = clampTimeout(url.searchParams.get("timeout"));
+  metrics.byEdition[edition]++;
 
   const items = parts.map(spec => {
     const idx = spec.lastIndexOf(":");
@@ -3109,10 +3125,20 @@ async function handleBatch(req, res, url) {
     if (!pc.ok) return { success: false, host: hc.value, port: item.port, error: pc.error };
 
     try {
-      if (edition === "auto")    return await autoDetect(hc.value, pc.value, timeout, null);
-      if (edition === "java")    return await checkJava(hc.value, pc.value, timeout);
-      if (edition === "bedrock") return await checkBedrock(hc.value, pc.value, timeout);
-      if (edition === "both")    return await checkBoth(hc.value, pc.value, timeout);
+      const key = makeCacheKey(hc.value, pc.value, edition, null);
+      const cached = cacheGet(key);
+      if (cached) {
+        metrics.cacheHits++;
+        return Object.assign({}, cached, { cached: true });
+      }
+      metrics.cacheMisses++;
+      let r;
+      if (edition === "auto")         r = await autoDetect(hc.value, pc.value, timeout, null);
+      else if (edition === "java")    r = await checkJava(hc.value, pc.value, timeout);
+      else if (edition === "bedrock") r = await checkBedrock(hc.value, pc.value, timeout);
+      else if (edition === "both")    r = await checkBoth(hc.value, pc.value, timeout);
+      if (r) cacheSet(key, r);
+      return r;
     } catch (e) {
       return { success: false, host: hc.value, error: "CHECK_FAILED" };
     }

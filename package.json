@@ -1,17 +1,11 @@
 {
-  "name": "minecraft-status-panel",
-  "version": "2.0.0",
-  "description": "Minecraft Java Server Status Panel V2",
-  "type": "module",
+  "name": "minecraft-status-api",
+  "version": "3.8.1",
+  "description": "Zero-dependency local REST API for Minecraft Java & Bedrock server status",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "@minescope/mineping": "2.0.1",
-    "express": "^5.1.0"
-  }
+  "type": "commonjs",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": {},
+  "license": "MIT"
 }
