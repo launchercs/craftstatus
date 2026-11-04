@@ -1216,6 +1216,13 @@ select option{background:var(--card);color:var(--text)}
   transition:background .25s,color .25s,border-color .25s;
 }
 .smp-item::-webkit-scrollbar{height:0}
+/* Minecraft color codes are tuned for a dark background (same as .motd),
+   so sample names keep a dark pill in the light theme. */
+:root[data-theme="light"] .smp-item{
+  background:var(--motd-bg);
+  color:var(--motd-fg);
+  border-color:#2a2a2a;
+}
 
 .stats{
   display:grid;
