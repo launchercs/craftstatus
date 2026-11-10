@@ -1,6 +1,16 @@
 /**
- * CraftStatus — Zero-Dependency Minecraft Status API  v3.8.1
+ * CraftStatus — Zero-Dependency Minecraft Status API  v3.8.2
  * ------------------------------------------------------------------
+ * Changelog v3.8.2:
+ *  - FIX: SRV رکورد Java دیگر روی Bedrock / پورت صریح / fallback اعمال نمی‌شود (IP اشتباه)
+ *  - FIX: استایل کامپوننت‌های JSON در MOTD به sibling بعدی نشت نمی‌کند
+ *  - FIX: Java ping وقتی status آمده ولی pong نیامده، آفلاین نشان نمی‌دهد
+ *  - FIX: Bedrock ping با retry (UDP loss) و ping دقیق از timestamp پاسخ
+ *  - FIX: "host:port" و "http://host/" در فیلد آدرس پذیرفته می‌شود
+ *  - FIX: /api/dns آدرس‌های داخلی را resolve نمی‌کند؛ batch با IPv6 خام درست parse می‌شود
+ *  - FIX: HEAD برای / و /api/health (مانیتورهای uptime)
+ *  - FIX: tooltip نمودار پینگ با نقاط downsample‌شده هماهنگ است
+ *  - NEW: TRUST_PROXY_HOPS اختیاری (جلوگیری از جعل X-Forwarded-For)
  * Changelog v3.8.1:
  *  - FIX: Light theme complete overhaul (all components)
  *  - FIX: Sparkline cleaner (auto-downsample to 40pts, thicker lines)
@@ -23,12 +33,15 @@ const dns   = require("dns").promises;
 // =====================================================================
 // Version + Config
 // =====================================================================
-const VERSION = "3.8.1";
+const VERSION = "3.8.2";
 
 const PORT         = Number.isFinite(Number(process.env.PORT)) ? Number(process.env.PORT) : 3000;
 const BIND         = process.env.BIND || "0.0.0.0";
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
 const TRUST_PROXY  = process.env.TRUST_PROXY === "1";
+// اختیاری: تعداد proxyهای مورد اعتماد. اگر تنظیم شود، IP از «انتهای» X-Forwarded-For
+// خوانده می‌شود (جعل‌شدنی نیست). اگر تنظیم نباشد، اولین مقدار خوانده می‌شود.
+const TRUST_PROXY_HOPS = Math.max(0, parseInt(process.env.TRUST_PROXY_HOPS, 10) || 0);
 const CACHE_TTL    = Math.max(0, Number(process.env.CACHE_TTL) || 15000);
 const CACHE_MAX    = 500;
 const SRV_TTL      = 5 * 60 * 1000;
@@ -227,12 +240,13 @@ function styleToCodes(style) {
 
 function extractText(value, parentStyle) {
   if (value == null) return "";
-  if (typeof value === "string") return styleToCodes(parentStyle) + value;
-  if (Array.isArray(value)) return value.map(v => extractText(v, parentStyle)).join("");
+  if (typeof value === "string") return (parentStyle ? "\u00A7r" : "") + styleToCodes(parentStyle) + value;
+  if (Array.isArray(value)) return value.map(v => extractText(v, parentStyle || EMPTY_STYLE)).join("");
   if (typeof value !== "object") return "";
 
   const style = makeChildStyle(parentStyle || EMPTY_STYLE, value);
-  const codes = styleToCodes(style);
+  // §r اول هر قطعه: استایل قطعه‌ی قبلی (sibling) به این قطعه نشت نکند
+  const codes = "\u00A7r" + styleToCodes(style);
   let out = "";
 
   if (typeof value.text === "string") {
@@ -350,6 +364,8 @@ function pingJava(host, port, timeout, handshakeHost, lookup) {
     let phase      = "waiting-status";
     let statusObj  = null;
     let pingSentAt = 0;
+    let connectedAt = 0;
+    let statusAt    = 0;
 
     const finish = (result) => {
       if (finished) return;
@@ -359,7 +375,20 @@ function pingJava(host, port, timeout, handshakeHost, lookup) {
       resolve(result);
     };
 
+    // اگر status دریافت شده ولی pong نیامد (برخی پروکسی‌ها)، نتیجه را موفق حساب کن
+    const failOrPartial = (code) => {
+      if (statusObj) {
+        return finish({
+          success: true,
+          data: statusObj,
+          ping: Math.max(1, (statusAt || Date.now()) - (connectedAt || statusAt || Date.now()))
+        });
+      }
+      finish({ success: false, error: code });
+    };
+
     socket.on("connect", () => {
+      connectedAt = Date.now();
       try {
         const portBuf = Buffer.alloc(2);
         portBuf.writeUInt16BE(port, 0);
@@ -398,6 +427,7 @@ function pingJava(host, port, timeout, handshakeHost, lookup) {
             return finish({ success: false, error: "INVALID_JSON" });
           }
           pingSentAt = Date.now();
+          statusAt = pingSentAt;
           const ts = Buffer.alloc(8);
           ts.writeBigInt64BE(BigInt(pingSentAt), 0);
           socket.write(createPacket(0x01, ts));
@@ -408,9 +438,9 @@ function pingJava(host, port, timeout, handshakeHost, lookup) {
       }
     });
 
-    socket.on("timeout", () => finish({ success: false, error: "TIMEOUT" }));
-    socket.on("error",   () => finish({ success: false, error: "CONNECTION_FAILED" }));
-    socket.on("close",   () => finish({ success: false, error: "CONNECTION_CLOSED" }));
+    socket.on("timeout", () => failOrPartial("TIMEOUT"));
+    socket.on("error",   () => failOrPartial("CONNECTION_FAILED"));
+    socket.on("close",   () => failOrPartial("CONNECTION_CLOSED"));
   });
 }
 
@@ -428,11 +458,13 @@ function pingBedrock(pinnedIp, port, timeout) {
 
     const startedAt = Date.now();
     let finished = false;
+    const retryTimers = [];
 
     const finish = (result) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      for (const t of retryTimers) clearTimeout(t);
       try { socket.close(); } catch (_) {}
       resolve(result);
     };
@@ -452,9 +484,13 @@ function pingBedrock(pinnedIp, port, timeout) {
         if (35 + strlen > msg.length) return;
         const info = msg.subarray(35, 35 + strlen).toString("utf8");
         const parts = info.split(";");
+        // پاسخ، timestamp همان بسته‌ی ارسالی را برمی‌گرداند → ping دقیق حتی با retry
+        const now = Date.now();
+        let sentAt = Number(msg.readBigInt64BE(1));
+        if (!Number.isFinite(sentAt) || sentAt > now || sentAt < startedAt - 5) sentAt = startedAt;
         finish({
           success: true,
-          ping: Date.now() - startedAt,
+          ping: Math.max(1, now - sentAt),
           data: {
             motd:       parts[1] || "",
             protocol:   parseInt(parts[2], 10) || null,
@@ -471,21 +507,33 @@ function pingBedrock(pinnedIp, port, timeout) {
       }
     });
 
-    const buf = Buffer.alloc(1 + 8 + 16 + 8);
-    buf.writeUInt8(0x01, 0);
-    buf.writeBigInt64BE(BigInt(Date.now()), 1);
-    RAKNET_MAGIC.copy(buf, 9);
     const guid = BigInt.asIntN(
       64,
       (BigInt(Date.now()) << 32n) ^ BigInt(Math.floor(Math.random() * 0xffffffff))
     );
-    buf.writeBigInt64BE(guid, 25);
 
-    try {
-      socket.connect(port, pinnedIp, () => {
+    const sendPing = () => {
+      if (finished) return;
+      const buf = Buffer.alloc(1 + 8 + 16 + 8);
+      buf.writeUInt8(0x01, 0);
+      buf.writeBigInt64BE(BigInt(Date.now()), 1);
+      RAKNET_MAGIC.copy(buf, 9);
+      buf.writeBigInt64BE(guid, 25);
+      try {
         socket.send(buf, (err) => {
           if (err) finish({ success: false, error: "SEND_FAILED" });
         });
+      } catch (_) {
+        finish({ success: false, error: "SEND_FAILED" });
+      }
+    };
+
+    try {
+      socket.connect(port, pinnedIp, () => {
+        sendPing();
+        // UDP ممکن است گم شود؛ دو بار دیگر در بازه‌ی timeout ارسال مجدد
+        retryTimers.push(setTimeout(sendPing, Math.floor(timeout / 3)));
+        retryTimers.push(setTimeout(sendPing, Math.floor((timeout * 2) / 3)));
       });
     } catch (_) {
       finish({ success: false, error: "SEND_FAILED" });
@@ -567,14 +615,10 @@ async function resolveAndValidate(host) {
     const isV6 = net.isIPv6(host);
     return { ok: true, addresses: [{ address: host, family: isV6 ? 6 : 4 }] };
   }
-  const srv = await resolveMinecraftSRVCached(host);
-  const target = (srv && srv.target) ? srv.target : host;
-
+  // نکته: SRV اینجا اعمال نمی‌شود؛ فقط checkJava آن را (در صورت لزوم) حل می‌کند
+  // و target را به این تابع می‌دهد. وگرنه Bedrock / پورت صریح / fallback به IP اشتباه می‌رفتند.
   let addrs = [];
-  try { addrs = await safeLookup(target); } catch (_) {}
-  if (!addrs.length && target !== host) {
-    try { addrs = await safeLookup(host); } catch (_) {}
-  }
+  try { addrs = await safeLookup(host); } catch (_) {}
   if (!addrs.length) return { ok: false, code: "DNS_LOOKUP_FAILED" };
 
   for (const a of addrs) {
@@ -591,6 +635,15 @@ function validateHost(host) {
   if (h.length < 1 || h.length > 253) return { ok: false, error: "host length invalid" };
   if (/[\s<>"'`;|&$\\]/.test(h)) return { ok: false, error: "host contains illegal characters" };
   return { ok: true, value: h };
+}
+
+// "xcraft.ir:25565" یا "http://xcraft.ir/" را به host و port جدا می‌کند
+// (IPv6 خام که چند colon دارد دست‌نخورده می‌ماند)
+function splitHostPort(h) {
+  let x = String(h).trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/[\/?#].*$/, "");
+  const m = /^([^:]+):(\d{1,5})$/.exec(x);
+  if (m) return { host: m[1], port: m[2] };
+  return { host: x, port: null };
 }
 
 function validatePort(port) {
@@ -622,9 +675,15 @@ setInterval(pruneBuckets, 60 * 1000).unref();
 
 function getClientIp(req) {
   if (TRUST_PROXY) {
-    const xff = req.headers["x-forwarded-for"];
-    if (Array.isArray(xff) && xff.length) return String(xff[0]).trim();
-    if (typeof xff === "string" && xff.length) return xff.split(",")[0].trim();
+    const raw = req.headers["x-forwarded-for"];
+    const xff = Array.isArray(raw) ? raw.join(",") : (typeof raw === "string" ? raw : "");
+    const entries = xff.split(",").map(x => x.trim()).filter(Boolean);
+    if (entries.length) {
+      if (TRUST_PROXY_HOPS > 0 && entries.length >= TRUST_PROXY_HOPS) {
+        return entries[entries.length - TRUST_PROXY_HOPS];
+      }
+      return entries[0];
+    }
   }
   return (req.socket && req.socket.remoteAddress) || "unknown";
 }
@@ -787,7 +846,14 @@ async function checkJava(host, port, timeout, opts) {
     }
   }
 
-  const v = await resolveAndValidate(targetHost);
+  let v = await resolveAndValidate(targetHost);
+  if (!v.ok && v.code === "DNS_LOOKUP_FAILED" && srvInfo) {
+    // target رکورد SRV resolve نشد → مستقیم روی خود host تلاش کن
+    srvInfo = null;
+    targetHost = host;
+    targetPort = effectivePort;
+    v = await resolveAndValidate(host);
+  }
   if (!v.ok) {
     return buildOfflineResult(host, effectivePort, "java", v.code, checkedAt);
   }
@@ -830,19 +896,63 @@ async function checkBedrock(host, port, timeout) {
 }
 
 async function autoDetect(host, port, timeout, prefer) {
-  const preferred = (prefer === "bedrock") ? "bedrock" : "java";
+  // تعیین اولویت: prefer صریح > حدس از پورت > java
+  let preferred;
+  if (prefer === "bedrock" || prefer === "java") {
+    preferred = prefer;
+  } else if (port === DEFAULT_BEDROCK_PORT) {
+    preferred = "bedrock";
+  } else if (port === DEFAULT_JAVA_PORT) {
+    preferred = "java";
+  } else {
+    preferred = "java";
+  }
   const secondary = (preferred === "java") ? "bedrock" : "java";
 
-  const runCheck = (ed) => ed === "java"
-    ? checkJava(host, port, timeout, { noFallback: true })
-    : checkBedrock(host, port, timeout);
+  // تعیین پورت هر نسخه در حالت auto:
+  // - اگر پورت صریح داده شده و با پورت پیش‌فرض آن نسخه فرق دارد،
+  //   فقط نسخه‌ای که پورت به آن «تعلق» دارد از پورت صریح استفاده می‌کند.
+  // - نسخه دیگر روی پورت پیش‌فرض خودش چک می‌شود (یا اگر prefer صریح باشد، اصلاً چک نمی‌شود).
+  const hasExplicitPort = port !== null && port !== undefined;
+  const isStandardJavaPort    = port === DEFAULT_JAVA_PORT;
+  const isStandardBedrockPort = port === DEFAULT_BEDROCK_PORT;
 
-  let prefResult, secResult;
+  function portFor(edition) {
+    if (!hasExplicitPort) return null; // null → پیش‌فرض خودش
+    if (edition === "bedrock") {
+      // اگر پورت صریح bedrock است یا پورت غیراستاندارد است → همان پورت
+      if (isStandardBedrockPort || (!isStandardJavaPort && !isStandardBedrockPort)) return port;
+      // اگر پورت صریح java است → bedrock روی پورت پیش‌فرض خودش
+      return null;
+    }
+    if (edition === "java") {
+      if (isStandardJavaPort || (!isStandardJavaPort && !isStandardBedrockPort)) return port;
+      return null;
+    }
+    return port;
+  }
+
+  // اگر کاربر prefer صریح داده و پورت هم صریح است، فقط همان نسخه را چک کن
+  // (چون پورت صریح + prefer صریح یعنی کاربر می‌داند چه می‌خواهد)
+  const skipSecondary =
+    (prefer === "java" || prefer === "bedrock") && hasExplicitPort;
+
+  // وقتی فقط یک نسخه چک می‌شود، همان پورت صریح کاربر بدون تغییر استفاده می‌شود
+  const effPort = (ed) => skipSecondary ? port : portFor(ed);
+  const runCheck = (ed) => ed === "java"
+    ? checkJava(host, effPort("java"), timeout, { noFallback: true })
+    : checkBedrock(host, effPort("bedrock"), timeout);
+
+  let prefResult, secResult = null;
   try {
-    [prefResult, secResult] = await Promise.all([
-      runCheck(preferred),
-      runCheck(secondary)
-    ]);
+    if (skipSecondary) {
+      prefResult = await runCheck(preferred);
+    } else {
+      [prefResult, secResult] = await Promise.all([
+        runCheck(preferred),
+        runCheck(secondary)
+      ]);
+    }
   } catch (err) {
     return {
       success: true,
@@ -863,20 +973,22 @@ async function autoDetect(host, port, timeout, prefer) {
       online:  !!prefResult.online,
       error:   prefResult.online ? null : (prefResult.error || null),
       ping:    prefResult.ping ?? null
-    },
-    {
+    }
+  ];
+  if (secResult) {
+    attempts.push({
       edition: secondary,
       online:  !!secResult.online,
       error:   secResult.online ? null : (secResult.error || null),
       ping:    secResult.ping ?? null
-    }
-  ];
+    });
+  }
 
   if (prefResult.online) {
     prefResult.attempts = attempts;
     return prefResult;
   }
-  if (secResult.online) {
+  if (secResult && secResult.online) {
     secResult.attempts = attempts;
     return secResult;
   }
@@ -1633,7 +1745,8 @@ pre{
   transition:.15s;cursor:pointer;
 }
 .doc:hover{background:var(--card-2);border-color:var(--accent)}
-.doc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.doc-head{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;margin-bottom:6px;text-align:center}
+.doc-head .doc-method{order:-1}
 .doc-name{font-size:12px;font-weight:700}
 .doc-method{
   background:var(--accent);color:#0a1a0a;font-size:9px;
@@ -1641,7 +1754,7 @@ pre{
 }
 :root[data-theme="light"] .doc-method{color:#ffffff}
 .doc-url{
-  direction:ltr;text-align:left;
+  direction:ltr;text-align:center;
   font-family:'VT323',monospace;font-size:13px;
   color:var(--accent-2);word-break:break-all;
 }
@@ -2011,6 +2124,15 @@ function renderMOTD(raw){
   });
   str = str.replace(/&([0-9a-fk-orA-FK-OR])/g, "\\u00A7$1");
 
+  // سرورها برای وسط‌چین کردن در کلاینت ماینکرفت از space اول/آخر خط استفاده می‌کنند؛
+  // اینجا با text-align:center وسط‌چین می‌شود، پس این فاصله‌ها را (بدون حذف کدهای رنگ) حذف می‌کنیم.
+  var codeRun = "(?:\\\\s|\\u00A7[0-9a-fk-orA-FK-OR]|\\u00A7#[0-9a-fA-F]{6})+";
+  var lead = new RegExp("^" + codeRun), trail = new RegExp(codeRun + "$");
+  var stripWs = function(m){ return m.replace(/\\s+/g, ""); };
+  str = str.split("\\n").map(function(line){
+    return line.replace(lead, stripWs).replace(trail, stripWs);
+  }).join("\\n");
+
   var gp = /%gradient(?:#([0-9a-fA-F]{6}))?(?:#([0-9a-fA-F]{6}))?%(.*?)(?:%gradient%|$)/g;
   var out = "", last = 0, m;
   while((m = gp.exec(str)) !== null){
@@ -2117,6 +2239,23 @@ function fmtTime(ms){
   return hh + ":" + mm + ":" + ss;
 }
 
+function downsamplePings(arr){
+  var MAX_POINTS = 40;
+  if(arr.length <= MAX_POINTS) return arr;
+  var step = arr.length / MAX_POINTS;
+  var sampled = [];
+  for(var s = 0; s < MAX_POINTS; s++){
+    var startIdx = Math.floor(s * step);
+    var endIdx = Math.max(startIdx + 1, Math.min(arr.length, Math.floor((s + 1) * step)));
+    var sum = 0, cnt = 0;
+    for(var k = startIdx; k < endIdx; k++){ sum += arr[k].v; cnt++; }
+    var avgBucket = cnt > 0 ? Math.round(sum / cnt) : 0;
+    var midIdx = Math.min(arr.length - 1, Math.floor((startIdx + endIdx) / 2));
+    sampled.push({ t: arr[midIdx].t, v: avgBucket });
+  }
+  return sampled;
+}
+
 function renderSparkline(host, port, edition, currentPing, flash){
   var p = sparkPrefs;
   var arr = getPings(host, port, edition, p.window);
@@ -2143,22 +2282,7 @@ function renderSparkline(host, port, edition, currentPing, flash){
       '</div>';
   }
 
-  // ===== Downsample to max 40 pts =====
-  var MAX_POINTS = 40;
-  var sampled = arr;
-  if(arr.length > MAX_POINTS){
-    var step = arr.length / MAX_POINTS;
-    sampled = [];
-    for(var s = 0; s < MAX_POINTS; s++){
-      var startIdx = Math.floor(s * step);
-      var endIdx = Math.min(arr.length, Math.floor((s + 1) * step));
-      var sum = 0, cnt = 0;
-      for(var k = startIdx; k < endIdx; k++){ sum += arr[k].v; cnt++; }
-      var avgBucket = cnt > 0 ? Math.round(sum / cnt) : 0;
-      var midIdx = Math.floor((startIdx + endIdx) / 2);
-      sampled.push({ t: arr[midIdx].t, v: avgBucket });
-    }
-  }
+  var sampled = downsamplePings(arr);
 
   var values = sampled.map(function(x){ return x.v; });
   var min = Math.min.apply(null, values);
@@ -2348,7 +2472,7 @@ function handleSparkHover(chartEl, clientX, clientY){
   var host = chartEl.getAttribute("data-host");
   var port = chartEl.getAttribute("data-port");
   var ed = chartEl.getAttribute("data-ed");
-  var arr = getPings(host, port, ed, sparkPrefs.window);
+  var arr = downsamplePings(getPings(host, port, ed, sparkPrefs.window));
   if(!arr.length) return;
 
   var svg = chartEl.querySelector("svg");
@@ -3030,14 +3154,17 @@ async function handleStatus(req, res, url, forcedEdition) {
 
   const hostCheck = validateHost(hostRaw);
   if (!hostCheck.ok) return sendJson(res, 400, { success: false, error: hostCheck.error });
-  const host = hostCheck.value;
+  const hp = splitHostPort(hostCheck.value);
+  const hostRecheck = validateHost(hp.host);
+  if (!hostRecheck.ok) return sendJson(res, 400, { success: false, error: hostRecheck.error });
+  const host = hostRecheck.value;
 
   if (!EDITIONS.includes(edition)) {
     return sendJson(res, 400, { success: false, error: "edition must be one of: " + EDITIONS.join(", ") });
   }
   const prefer = ["java", "bedrock"].includes(preferRaw) ? preferRaw : null;
 
-  const portCheck = validatePort(portRaw);
+  const portCheck = validatePort((portRaw === undefined || portRaw === "") ? hp.port : portRaw);
   if (!portCheck.ok) return sendJson(res, 400, { success: false, error: portCheck.error });
   const port = portCheck.value;
   const hasPort = port !== null;
@@ -3123,7 +3250,7 @@ async function handleBatch(req, res, url) {
   const items = parts.map(spec => {
     const idx = spec.lastIndexOf(":");
     let hostPart = spec, portPart = null;
-    if (idx > -1 && /^\d+$/.test(spec.slice(idx + 1))) {
+    if (idx > -1 && idx === spec.indexOf(":") && /^\d+$/.test(spec.slice(idx + 1))) {
       hostPart = spec.slice(0, idx);
       portPart = Number(spec.slice(idx + 1));
     }
@@ -3174,7 +3301,14 @@ async function handleDns(req, res, url) {
   const hostRaw = url.searchParams.get("host");
   const hostCheck = validateHost(hostRaw);
   if (!hostCheck.ok) return sendJson(res, 400, { success: false, error: hostCheck.error });
-  const host = hostCheck.value;
+  const host = splitHostPort(hostCheck.value).host;
+  if (isPrivateHost(host)) {
+    return sendJson(res, 400, {
+      success: false,
+      error: "This host is blocked for security reasons (private/reserved address).",
+      code: "PRIVATE_ADDRESS"
+    });
+  }
 
   const out = { success: true, host, srv: null, a: [], aaaa: [], errors: {} };
 
@@ -3265,12 +3399,18 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 429, { success: false, error: "Too many requests. Try again later." });
     }
 
-    if (req.method !== "GET") {
+    const isHead = req.method === "HEAD";
+    if (req.method !== "GET" && !isHead) {
       return sendJson(res, 405, { success: false, error: "Method not allowed" });
     }
 
     const url = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const path = url.pathname;
+
+    // HEAD فقط برای صفحه‌ی اصلی و health (مانیتورهایی مثل UptimeRobot)
+    if (isHead && path !== "/" && path !== "/index.html" && path !== "/api/health") {
+      return sendJson(res, 405, { success: false, error: "Method not allowed" });
+    }
 
     if (path === "/" || path === "/index.html") return sendHtml(res, LANDING_HTML);
 

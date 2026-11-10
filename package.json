@@ -1,6 +1,6 @@
 {
   "name": "minecraft-status-api",
-  "version": "3.8.1",
+  "version": "3.8.2",
   "description": "Zero-dependency local REST API for Minecraft Java & Bedrock server status",
   "main": "server.js",
   "type": "commonjs",
